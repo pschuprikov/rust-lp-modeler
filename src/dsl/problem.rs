@@ -122,7 +122,7 @@ impl Problem for LpProblem {
             )));
             self.obj_expr = Some(simpl_expr);
         } else {
-            let (_, simpl_expr) = split_constant_and_expr(&simplify(expr));
+            let (_, simpl_expr) = split_constant_and_expr(&expr);
             self.obj_expr = Some(simpl_expr);
         }
     }

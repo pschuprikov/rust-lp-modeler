@@ -7,7 +7,14 @@ use dsl::Constraint::*;
 use dsl::LpExpression::*;
 
 pub trait LpFileFormat {
-    fn to_lp_file_format(&self) -> String;
+    fn format<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result;
+
+    fn to_lp_file_format(&self) -> String {
+        let mut buffer = String::new();
+        self.format(&mut buffer).unwrap();
+        buffer
+    }
+
     fn write_lp(&self, file_model: &str) -> Result<()> {
         let mut buffer = File::create(file_model)?;
         buffer.write(self.to_lp_file_format().as_bytes())?;
@@ -17,64 +24,58 @@ pub trait LpFileFormat {
 
 impl LpFileFormat for LpProblem {
 
-    fn to_lp_file_format(&self) -> String {
+    fn format<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result {
+        write!(w, "\\ {}\n\n", &self.name)?;
 
-        let mut buffer = String::new();
+        format_objective_lp_file_block(self, w)?;
 
-        buffer.push_str(format!("\\ {}\n\n", &self.name).as_str());
+        write!(w, "\n\nSubject To\n")?; // TODO: check emptyness
+        format_constraints_lp_file_block(self, w)?;
 
-        buffer.push_str( &objective_lp_file_block(self) );
+        writeln!(w, "\nBounds")?; // TODO: check emptyness
+        format_bounds_lp_file_block(self, w)?;
 
-        let constraints_block = constraints_lp_file_block(self);
-        if constraints_block.len() > 0 {
-            buffer.push_str(format!("\n\nSubject To\n{}", &constraints_block).as_str());
-        }
+        write!(w, "\nGenerals\n  ")?; // TODO: check emptyness
+        format_integers_lp_file_block(self, w)?;
 
-        let bounds_block = bounds_lp_file_block(self);
-        if bounds_block.len() > 0 {
-            buffer.push_str(format!("\nBounds\n{}", &bounds_block).as_str());
-        }
+        write!(w, "\nBinary\n  ")?; // TODO: check emptyness
+        format_binaries_lp_file_block(self, w)?;
 
-        let integers_block = integers_lp_file_block(self);
-        if integers_block.len() > 0 {
-            buffer.push_str(format!("\nGenerals\n  {}\n", &integers_block).as_str());
-        }
-
-        let binaries_block = binaries_lp_file_block(self);
-        if binaries_block.len() > 0 {
-            buffer.push_str(format!("\nBinary\n  {}\n", &binaries_block).as_str());
-        }
-
-        buffer.push_str("\nEnd");
-
-        buffer
+        write!(w, "\nEnd")
     }
 }
 
-fn objective_lp_file_block(prob: &LpProblem) -> String {
+fn format_objective_lp_file_block<W: std::fmt::Write>(
+        prob: &LpProblem, w: &mut W) -> std::fmt::Result {
     // Write objectives
     let obj_type = match prob.objective_type {
         LpObjective::Maximize => "Maximize\n  ",
         LpObjective::Minimize => "Minimize\n  "
     };
     match prob.obj_expr {
-        Some(ref expr) => format!("{}obj: {}", obj_type, expr.to_lp_file_format()),
-        _ => String::new()
+        Some(ref expr) => {
+            write!(w, "{}obj: ", obj_type)?; 
+            expr.format(w)
+        },
+        _ => Ok(()),
     }
 }
-fn constraints_lp_file_block(prob: &LpProblem) -> String {
-    let mut res = String::new();
+
+fn format_constraints_lp_file_block<W: std::fmt::Write>(
+        prob: &LpProblem, w: &mut W) -> std::fmt::Result {
     let mut constraints = prob.constraints.iter();
     let mut index = 1;
     while let Some(ref constraint) = constraints.next() {
-        res.push_str(&format!("  c{}: {}\n", index.to_string(), &constraint.to_lp_file_format()));
+        write!(w, "  c{}: ", index.to_string())?;
+        constraint.format(w)?;
+        writeln!(w)?;
         index += 1;
     }
-    res
+    Ok(())
 }
 
-fn bounds_lp_file_block(prob: &LpProblem) -> String {
-    let mut res = String::new();
+fn format_bounds_lp_file_block<W: std::fmt::Write>(
+        prob: &LpProblem, w: &mut W) -> std::fmt::Result {
     for (_, v) in prob.variables() {
         match v {
             &ConsInt(LpInteger {
@@ -88,17 +89,17 @@ fn bounds_lp_file_block(prob: &LpProblem) -> String {
                             upper_bound,
                         }) => {
                 if let Some(l) = lower_bound {
-                    res.push_str(&format!("  {} <= {}", &l.to_string(), &name));
+                    write!(w, "  {} <= {}", &l.to_string(), &name)?;
                     if let Some(u) = upper_bound {
-                        res.push_str(&format!(" <= {}", &u.to_string()));
+                        write!(w, " <= {}", u.to_string())?;
                     }
-                    res.push_str("\n");
+                    writeln!(w)?;
                 } else if let Some(u) = upper_bound {
-                    res.push_str(&format!("  {} <= {}\n", &name, &u.to_string()));
+                    writeln!(w, "  {} <= {}", &name, &u.to_string())?;
                 } else {
                     match v {
                         &ConsCont(LpContinuous { .. }) => {
-                            res.push_str(&format!("  {} free\n", &name));
+                            writeln!(w, "  {} free", &name)?;
                         } // TODO: IntegerVar => -INF to INF
                         _ => (),
                     }
@@ -107,74 +108,65 @@ fn bounds_lp_file_block(prob: &LpProblem) -> String {
             _ => (),
         }
     }
-    res
+    Ok(())
 }
 
-fn integers_lp_file_block(prob: &LpProblem) -> String {
-    let mut res = String::new();
+fn format_integers_lp_file_block<W: std::fmt::Write>(
+        prob: &LpProblem, w: &mut W) -> std::fmt::Result {
     for (_, v) in prob.variables() {
         match v {
             &ConsInt(LpInteger { ref name, .. }) => {
-                res.push_str(format!("{} ", name).as_str());
+                write!(w, "{} ", name)?;
             }
             _ => (),
         }
     }
-    res
+    Ok(())
 }
 
-fn binaries_lp_file_block(prob: &LpProblem) -> String  {
-    let mut res = String::new();
+fn format_binaries_lp_file_block<W: std::fmt::Write>(
+        prob: &LpProblem, w: &mut W) -> std::fmt::Result {
     for (_, v) in prob.variables() {
         match v {
             &ConsBin(LpBinary { ref name }) => {
-                res.push_str(format!("{} ", name).as_str());
+                write!(w, "{} ", name)?;
             }
             _ => (),
         }
     }
-    res
+    Ok(())
 }
 
 impl LpFileFormat for LpExpression {
-    fn to_lp_file_format(&self) -> String {
-        fn formalize_signs(s: String) -> String {
-            let mut s = s.clone();
-            let mut t = "".to_string();
-            while s != t {
-                t = s.clone();
-                s = s.replace("+ +", "+ ");
-                s = s.replace("- +", "- ");
-                s = s.replace("+ -", "- ");
-                s = s.replace("- -", "+ ");
-                s = s.replace("  ", " ");
-            }
-            s
-        }
-
-        formalize_signs(show(&simplify(self), false))
+    fn format<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result {
+        format(&self, w, false)
     }
+
 }
 
-fn show(e: &LpExpression, with_parenthesis: bool) -> String {
+fn format<W: std::fmt::Write>(
+        e: &LpExpression, w: &mut W, with_parenthesis: bool
+        ) -> std::fmt::Result {
     let str_left_mult = if with_parenthesis { "(" } else { "" };
     let str_right_mult = if with_parenthesis { ")" } else { "" };
     let str_op_mult = if with_parenthesis { " * " } else { " " };
     match e {
-        &LitVal(n) => n.to_string(),
+        &LitVal(n) => { 
+            write!(w, "{}", n.to_string())
+        },
         &AddExpr(ref e1, ref e2) => {
-            str_left_mult.to_string()
-                + &show(e1, with_parenthesis)
-                + " + "
-                + &show(e2, with_parenthesis)
-                + str_right_mult
+            write!(w, "{}", str_left_mult.to_string())?;
+            format(e1, w, with_parenthesis)?;
+            write!(w, " + ")?;
+            format(e2, w, with_parenthesis)?;
+            write!(w, "{}", str_right_mult.to_string())
         }
         &SubExpr(ref e1, ref e2) => {
-            str_left_mult.to_string()
-                + &show(e1, with_parenthesis)
-                + " - "
-                + &show(e2, with_parenthesis)
-                + str_right_mult
+            write!(w, "{}", str_left_mult.to_string())?;
+            format(e1, w, with_parenthesis)?;
+            write!(w, " - ")?;
+            format(e2, w, with_parenthesis)?;
+            write!(w, "{}", str_right_mult.to_string())
         }
         &MulExpr(ref e1, ref e2) => {
             let ref deref_e1 = **e1;
@@ -182,44 +174,48 @@ fn show(e: &LpExpression, with_parenthesis: bool) -> String {
             match deref_e1 {
                 &LitVal(v) if v == 1.0 => {
                     //e2.to_lp_file_format()
-                    str_left_mult.to_string()
-                        + &" ".to_string()
-                        + &show(e2, with_parenthesis)
-                        + str_right_mult
+                    write!(w, "{} ", str_left_mult.to_string())?;
+                    format(e2, w, with_parenthesis)?;
+                    write!(w, "{} ", str_right_mult.to_string())
                 }
                 &LitVal(v) if v == -1.0 => {
                     //"-".to_string() + &e2.to_lp_file_format()
-                    str_left_mult.to_string()
-                        + &"-".to_string()
-                        + &show(e2, with_parenthesis)
-                        + str_right_mult
+                    write!(w, "{}-", str_left_mult.to_string())?;
+                    format(e2, w, with_parenthesis)?;
+                    write!(w, "{} ", str_right_mult.to_string())
                 }
                 _ => {
-                    str_left_mult.to_string()
-                        + &show(e1, with_parenthesis)
-                        + str_op_mult
-                        + &show(e2, with_parenthesis)
-                        + str_right_mult
+                    write!(w, "{}", str_left_mult.to_string())?;
+                    format(e1, w, with_parenthesis)?;
+                    write!(w, "{}", str_op_mult)?;
+                    format(e2, w, with_parenthesis)?;
+                    write!(w, "{} ", str_right_mult.to_string())
                 }
             }
         }
-        &ConsBin(LpBinary { name: ref n, .. }) => n.to_string(),
-        &ConsInt(LpInteger { name: ref n, .. }) => n.to_string(),
-        &ConsCont(LpContinuous { name: ref n, .. }) => n.to_string(),
-        _ => "EmptyExpr!!".to_string(),
+        &ConsBin(LpBinary { name: ref n, .. }) => {
+            write!(w, "{}", n.to_string())
+        },
+        &ConsInt(LpInteger { name: ref n, .. }) => {
+            write!(w, "{}", n.to_string())
+        },
+        &ConsCont(LpContinuous { name: ref n, .. }) => {
+            write!(w, "{}", n.to_string())
+        },
+        _ => {
+            write!(w, "EmptyExpr!!")
+        },
     }
 }
 
 impl LpFileFormat for LpConstraint {
-    fn to_lp_file_format(&self) -> String {
-        let mut res = String::new();
-        res.push_str(&self.0.to_lp_file_format());
+    fn format<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result {
+        self.0.format(w)?;
         match self.1 {
-            GreaterOrEqual => res.push_str(" >= "),
-            LessOrEqual => res.push_str(" <= "),
-            Equal => res.push_str(" = "),
-        }
-        res.push_str(&self.2.to_lp_file_format());
-        res
+            GreaterOrEqual => write!(w, " >= ")?,
+            LessOrEqual => write!(w, " <= ")?,
+            Equal => write!(w, " = ")?,
+        };
+        self.2.format(w)
     }
 }
