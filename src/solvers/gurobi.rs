@@ -4,8 +4,8 @@ use self::uuid::Uuid;
 use std::fs;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufRead};
-use std::process::Command;
+use std::io::{BufReader, BufRead, Write};
+use std::process::{Command, Output};
 
 use dsl::LpProblem;
 use format::lp_format::*;
@@ -30,6 +30,25 @@ impl GurobiSolver {
             name: self.name.clone(),
             command_name,
             temp_solution_file: self.temp_solution_file.clone(),
+        }
+    }
+
+    fn process_output<'a>(&self, problem: &'a LpProblem, r: Output) -> Result<Solution<'a>, String> {
+        let mut status = Status::SubOptimal;
+        let result = String::from_utf8(r.stdout).expect("");
+        if result.contains("Optimal solution found")
+        {
+            status = Status::Optimal;
+        } else if result.contains("infesible") {
+            status = Status::Infeasible;
+        }
+        if r.status.success() {
+            self.read_solution(&self.temp_solution_file, Some(problem)).map(|solution| Solution {status, ..solution.clone()} )
+        } else {
+            File::create(&format!("{}.stderr", problem.unique_name)).expect("couldn't open").write_all(&r.stderr).expect("couldn't write error");
+            File::create(&format!("{}.stdout", problem.unique_name)).expect("couldn't open").write_all(&result.as_bytes()).expect("couldn't write stdout");
+
+            Err(r.status.to_string())
         }
     }
 }
@@ -87,19 +106,7 @@ impl SolverTrait for GurobiSolver {
                     .output()
                     {
                         Ok(r) => {
-                            let mut status = Status::SubOptimal;
-                            let result = String::from_utf8(r.stdout).expect("");
-                            if result.contains("Optimal solution found")
-                            {
-                                status = Status::Optimal;
-                            } else if result.contains("infesible") {
-                                status = Status::Infeasible;
-                            }
-                            if r.status.success() {
-                                self.read_solution(&self.temp_solution_file, Some(problem)).map(|solution| Solution {status, ..solution.clone()} )
-                            } else {
-                                Err(r.status.to_string())
-                            }
+                            self.process_output(problem, r)
                         }
                         Err(_) => Err(format!("Error running the {} solver", self.name)),
                     };
