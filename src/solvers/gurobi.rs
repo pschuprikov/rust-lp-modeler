@@ -36,7 +36,7 @@ impl GurobiSolver {
     fn process_output<'a>(&self, problem: &'a LpProblem, r: Output) -> Result<Solution<'a>, String> {
         let mut status = Status::SubOptimal;
         let result = String::from_utf8(r.stdout).expect("");
-        if result.contains("Optimal solution found")
+        if result.contains("Optimal objective")
         {
             status = Status::Optimal;
         } else if result.contains("infesible") {
