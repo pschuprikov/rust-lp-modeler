@@ -4,8 +4,8 @@ use self::uuid::Uuid;
 use std::fs;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Error, BufReader, BufRead};
-use std::process::Command;
+use std::io::{Error, BufReader, BufRead, Write};
+use std::process::{Command, Output};
 
 use dsl::LpProblem;
 use format::lp_format::*;
@@ -39,6 +39,18 @@ impl GlpkSolver {
             temp_solution_file,
         }
     }
+
+    fn process_output<'a>(&self, problem: &'a LpProblem, r: Output) -> Result<Solution<'a>, String> {
+        if r.status.success() {
+            self.read_solution(&self.temp_solution_file, Some(problem))
+        } else {
+            File::create(&format!("{}.stderr", problem.unique_name)).expect("couldn't open").write_all(&r.stderr).expect("couldn't write error");
+            File::create(&format!("{}.stdout", problem.unique_name)).expect("couldn't open").write_all(&r.stdout).expect("couldn't write stdout");
+
+            Err(r.status.to_string())
+        }
+    }
+
 }
 
 impl SolverWithSolutionParsing for GlpkSolver {
@@ -128,13 +140,7 @@ impl SolverTrait for GlpkSolver {
                     .arg(&self.temp_solution_file)
                     .output()
                     {
-                        Ok(r) => {
-                            if r.status.success() {
-                                self.read_solution(&self.temp_solution_file, Some(problem))
-                            } else {
-                                Err(r.status.to_string())
-                            }
-                        }
+                        Ok(r) => self.process_output(problem, r),
                         Err(_) => Err(format!("Error running the {} solver", self.name)),
                     };
                 let _ = fs::remove_file(&file_model);
